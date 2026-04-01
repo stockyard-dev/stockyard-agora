@@ -1,0 +1,13 @@
+package store
+import("database/sql";"fmt";"os";"path/filepath";"time";_ "modernc.org/sqlite")
+type DB struct{*sql.DB}
+type Poll struct{ID int64 `json:"id"`;Question string `json:"question"`;Options string `json:"options"`;Status string `json:"status"`;VoteCount int `json:"vote_count"`;CreatedAt time.Time `json:"created_at"`}
+type Vote struct{ID int64 `json:"id"`;PollID int64 `json:"poll_id"`;Option string `json:"option"`;VoterID string `json:"voter_id"`;CreatedAt time.Time `json:"created_at"`}
+func Open(d string)(*DB,error){os.MkdirAll(d,0755);dsn:=filepath.Join(d,"agora.db")+"?_journal_mode=WAL&_busy_timeout=5000";db,err:=sql.Open("sqlite",dsn);if err!=nil{return nil,fmt.Errorf("open: %w",err)};db.SetMaxOpenConns(1);migrate(db);return &DB{db},nil}
+func migrate(db *sql.DB){db.Exec(`CREATE TABLE IF NOT EXISTS polls(id INTEGER PRIMARY KEY AUTOINCREMENT,question TEXT NOT NULL,options TEXT DEFAULT '',status TEXT DEFAULT 'open',vote_count INTEGER DEFAULT 0,created_at DATETIME DEFAULT CURRENT_TIMESTAMP);CREATE TABLE IF NOT EXISTS votes(id INTEGER PRIMARY KEY AUTOINCREMENT,poll_id INTEGER NOT NULL,option TEXT NOT NULL,voter_id TEXT DEFAULT '',created_at DATETIME DEFAULT CURRENT_TIMESTAMP,UNIQUE(poll_id,voter_id))`)}
+func(db *DB)Create(p *Poll)error{res,err:=db.Exec(`INSERT INTO polls(question,options)VALUES(?,?)`,p.Question,p.Options);if err!=nil{return err};p.ID,_=res.LastInsertId();return nil}
+func(db *DB)List()([]Poll,error){rows,_:=db.Query(`SELECT id,question,options,status,vote_count,created_at FROM polls ORDER BY created_at DESC`);defer rows.Close();var out[]Poll;for rows.Next(){var p Poll;rows.Scan(&p.ID,&p.Question,&p.Options,&p.Status,&p.VoteCount,&p.CreatedAt);out=append(out,p)};return out,nil}
+func(db *DB)Vote(pollID int64,option,voterID string)error{_,err:=db.Exec(`INSERT INTO votes(poll_id,option,voter_id)VALUES(?,?,?)`,pollID,option,voterID);if err!=nil{return err};db.Exec(`UPDATE polls SET vote_count=vote_count+1 WHERE id=?`,pollID);return nil}
+func(db *DB)Results(pollID int64)(map[string]interface{},error){rows,_:=db.Query(`SELECT option,COUNT(*) FROM votes WHERE poll_id=? GROUP BY option ORDER BY COUNT(*) DESC`,pollID);defer rows.Close();results:=map[string]int{};for rows.Next(){var opt string;var cnt int;rows.Scan(&opt,&cnt);results[opt]=cnt};return map[string]interface{}{"results":results},nil}
+func(db *DB)ClosePoll(id int64){db.Exec(`UPDATE polls SET status='closed' WHERE id=?`,id)}
+func(db *DB)Stats()(map[string]interface{},error){var polls,votes int;db.QueryRow(`SELECT COUNT(*) FROM polls WHERE status='open'`).Scan(&polls);db.QueryRow(`SELECT COUNT(*) FROM votes`).Scan(&votes);return map[string]interface{}{"open_polls":polls,"total_votes":votes},nil}
